@@ -148,12 +148,64 @@ export const solarizedTheme: ThemeConfig = {
 	},
 };
 
+export const greenTheme: ThemeConfig = {
+	name: 'green',
+	colors: {
+		primary: '#00cc66',
+		secondary: '#66ff99',
+		accent: '#00cc66',
+		foreground: '#ffffff',
+		background: '#001a0d',
+		muted: '#40805c',
+		success: '#00cc66',
+		warning: '#ffff00',
+		error: '#ff3333',
+		info: '#00cc66',
+	},
+	icons: {
+		spinner: ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'],
+		tool: '  ⏵ ',
+		assistant: '⏺ ',
+		user: '> ',
+		system: 'ℹ ',
+		success: '✓ ',
+		error: '✗ ',
+	},
+};
+
+export const darkGreenTheme: ThemeConfig = {
+    name: 'dark-green',
+    colors: {
+        primary: '#2ecc71',
+        secondary: '#a7f3d0',
+        accent: '#16a34a',
+        foreground: '#e6fff2',
+        background: '#021a12',
+        muted: '#3b7a5a',
+        success: '#57d986',
+        warning: '#f6d365',
+        error: '#ff6b6b',
+        info: '#7ee7c6',
+    },
+    icons: {
+        spinner: ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'],
+        tool: '  ⏵ ',
+        assistant: '⏺ ',
+        user: '> ',
+        system: 'ℹ ',
+        success: '✓ ',
+        error: '✗ ',
+    },
+};
+
 export const BUILTIN_THEMES: Record<string, ThemeConfig> = {
 	default: defaultTheme,
 	dark: darkTheme,
 	minimal: minimalTheme,
 	cyberpunk: cyberpunkTheme,
 	solarized: solarizedTheme,
+	green: greenTheme,
+	'dark-green': darkGreenTheme,
 };
 
 export function getTheme(name: string): ThemeConfig {

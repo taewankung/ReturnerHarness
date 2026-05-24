@@ -220,6 +220,8 @@ def _state_payload(state: AppState) -> dict[str, Any]:
         "bridge_sessions": state.bridge_sessions,
         "output_style": state.output_style,
         "keybindings": dict(state.keybindings),
+        "context_token_count": state.context_token_count,
+        "auto_compact_threshold_tokens": state.auto_compact_threshold_tokens,
     }
 
 

@@ -39,6 +39,7 @@ from openharness.permissions import PermissionChecker
 from openharness.plugins import load_plugins
 from openharness.prompts import build_runtime_system_prompt
 from openharness.state import AppState, AppStateStore
+from openharness.services.compact import estimate_message_tokens
 from openharness.services.session_backend import DEFAULT_SESSION_BACKEND, SessionBackend
 from openharness.tools import ToolRegistry, create_default_tool_registry
 from openharness.keybindings import load_keybindings
@@ -559,7 +560,22 @@ def sync_app_state(bundle: RuntimeBundle) -> None:
         bridge_sessions=len(get_bridge_manager().list_sessions()),
         output_style=settings.output_style,
         keybindings=load_keybindings(),
+        context_token_count=None,
+        auto_compact_threshold_tokens=(
+            bundle.engine._auto_compact_threshold_tokens
+            if getattr(bundle.engine, '_auto_compact_threshold_tokens', None) is not None
+            else None
+        ),
     )
+    # Estimate token usage for UI display (best-effort)
+    try:
+        token_count = estimate_message_tokens(list(bundle.engine.messages), model=bundle.engine.model)
+    except Exception:
+        token_count = None
+    try:
+        bundle.app_state.set(context_token_count=token_count)
+    except Exception:
+        pass
 
 
 def refresh_runtime_client(bundle: RuntimeBundle) -> None:

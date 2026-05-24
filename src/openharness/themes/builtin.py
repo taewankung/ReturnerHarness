@@ -41,6 +41,21 @@ BUILTIN_THEMES: dict[str, ThemeConfig] = {
         icons=IconConfig(spinner="·", tool="*", error="!", success="+", agent=">"),
         layout=LayoutConfig(compact=False, show_tokens=True, show_time=True),
     ),
+    "dark-green": ThemeConfig(
+        name="dark-green",
+        colors=ColorsConfig(
+            primary="#4caf50",
+            secondary="#8bc34a",
+            accent="#cddc39",
+            error="#f44336",
+            muted="#4caf50",
+            background="#1b5e20",
+            foreground="#a5d6a7",
+        ),
+        borders=BorderConfig(style="rounded"),
+        icons=IconConfig(spinner="✦", tool="⚙", error="✖", success="✔", agent="➤"),
+        layout=LayoutConfig(compact=False, show_tokens=True, show_time=True),
+    ),
     "minimal": ThemeConfig(
         name="minimal",
         colors=ColorsConfig(

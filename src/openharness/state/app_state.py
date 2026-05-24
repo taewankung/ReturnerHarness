@@ -28,3 +28,6 @@ class AppState:
     bridge_sessions: int = 0
     output_style: str = "default"
     keybindings: dict[str, str] = field(default_factory=dict)
+    # Estimated conversation token count and configured auto-compact threshold
+    context_token_count: int | None = None
+    auto_compact_threshold_tokens: int | None = None

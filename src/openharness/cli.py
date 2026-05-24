@@ -2318,6 +2318,10 @@ def main(
     if dangerously_skip_permissions:
         permission_mode = "full_auto"
 
+    # If the user didn't pass --api-key, allow environment variables to provide it
+    if not api_key:
+        api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENHARNESS_API_KEY")
+
     # Apply --theme override to settings
     if theme:
         from openharness.config.settings import load_settings, save_settings
@@ -2432,6 +2436,21 @@ def main(
         if not prompt:
             print("Error: -p/--print requires a prompt value, e.g. -p 'your prompt'", file=sys.stderr)
             raise typer.Exit(1)
+        # If an API key was provided (via flag or env), build a client and pass it through
+        api_client_obj = None
+        if api_key:
+            try:
+                if api_format and api_format.startswith("openai"):
+                    from openharness.api.openai_client import OpenAICompatibleClient
+
+                    api_client_obj = OpenAICompatibleClient(api_key, base_url=base_url)
+                else:
+                    from openharness.api.client import AnthropicApiClient
+
+                    api_client_obj = AnthropicApiClient(api_key=api_key, base_url=base_url)
+            except Exception:
+                api_client_obj = None
+
         asyncio.run(
             run_print_mode(
                 prompt=prompt,
@@ -2446,6 +2465,7 @@ def main(
                 permission_mode=permission_mode,
                 max_turns=max_turns,
                 effort=effort,
+                api_client=api_client_obj,
             )
         )
         return

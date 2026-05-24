@@ -272,8 +272,10 @@ class OpenAICompatibleClient:
         normalized_base_url = _normalize_openai_base_url(base_url)
         if normalized_base_url:
             kwargs["base_url"] = normalized_base_url
-        if timeout is not None:
-            kwargs["timeout"] = timeout
+        # Use a generous default timeout when not explicitly provided to
+        # avoid surprising short request timeouts against local servers.
+        DEFAULT_TIMEOUT = 300.0
+        kwargs["timeout"] = timeout if timeout is not None else DEFAULT_TIMEOUT
         self._client = AsyncOpenAI(**kwargs)
 
     async def stream_message(self, request: ApiMessageRequest) -> AsyncIterator[ApiStreamEvent]:
@@ -338,53 +340,125 @@ class OpenAICompatibleClient:
         _think_buf = ""
 
         stream = await self._client.chat.completions.create(**params)
+        log.debug("OpenAICompatibleClient: created stream for model=%s; stream=%s", request.model, params.get("stream"))
         async for chunk in stream:
-            if not chunk.choices:
-                # Usage-only chunk (some providers send this at the end)
-                if chunk.usage:
+            log.debug("OpenAICompatibleClient: received chunk=%r", chunk)
+            # Some providers emit chunks with no choices (usage-only metadata).
+            if not getattr(chunk, "choices", None):
+                if getattr(chunk, "usage", None):
                     usage_data = {
                         "input_tokens": chunk.usage.prompt_tokens or 0,
                         "output_tokens": chunk.usage.completion_tokens or 0,
                     }
                 continue
 
-            delta = chunk.choices[0].delta
-            chunk_finish = chunk.choices[0].finish_reason
+            choice = chunk.choices[0]
+            delta = getattr(choice, "delta", None)
+            chunk_finish = getattr(choice, "finish_reason", None)
 
             if chunk_finish:
                 finish_reason = chunk_finish
 
-            # Accumulate reasoning_content from thinking models (not shown to user)
-            reasoning_piece = getattr(delta, "reasoning_content", None) or ""
-            if reasoning_piece:
-                collected_reasoning += reasoning_piece
+            # Handle streaming delta (preferred) or full message (some servers return a
+            # non-streaming final message object). Support both shapes for robustness.
+            if delta is not None:
+                # Accumulate reasoning_content from thinking models (not shown to user)
+                reasoning_piece = getattr(delta, "reasoning_content", None) or ""
+                if reasoning_piece:
+                    collected_reasoning += reasoning_piece
 
-            # Stream text content to user, stripping inline <think> blocks
-            if delta.content:
-                _think_buf += delta.content
-                visible, _think_buf = _strip_think_blocks(_think_buf)
-                if visible:
-                    collected_content += visible
-                    yield ApiTextDeltaEvent(text=visible)
+                # Stream text content to user, stripping inline <think> blocks
+                if getattr(delta, "content", None):
+                    _think_buf += delta.content
+                    visible, _think_buf = _strip_think_blocks(_think_buf)
+                    if visible:
+                        collected_content += visible
+                        yield ApiTextDeltaEvent(text=visible)
+                else:
+                    # Some backends include the final message in choice.message
+                    msg = getattr(choice, "message", None)
+                    if msg is not None:
+                        content_text = getattr(msg, "content", None)
+                        if content_text:
+                            collected_content += content_text
+                            yield ApiTextDeltaEvent(text=content_text)
+                        if getattr(msg, "tool_calls", None):
+                            for tc in msg.tool_calls:
+                                func = getattr(tc, "function", None)
+                                name = None
+                                args = None
+                                if func is not None:
+                                    name = getattr(func, "name", None)
+                                    args = getattr(func, "arguments", None)
+                                else:
+                                    name = getattr(tc, "name", None)
+                                    args = getattr(tc, "arguments", None)
+                                if isinstance(args, str):
+                                    try:
+                                        args = json.loads(args)
+                                    except Exception:
+                                        args = {}
+                                if name:
+                                    idx = getattr(tc, "index", 0)
+                                    if idx not in collected_tool_calls:
+                                        collected_tool_calls[idx] = {"id": getattr(tc, "id", ""), "name": "", "arguments": ""}
+                                    collected_tool_calls[idx]["name"] = name
+                                    if isinstance(args, dict):
+                                        collected_tool_calls[idx]["arguments"] += json.dumps(args)
 
-            # Accumulate tool calls
-            if delta.tool_calls:
-                for tc_delta in delta.tool_calls:
-                    idx = tc_delta.index
-                    if idx not in collected_tool_calls:
-                        collected_tool_calls[idx] = {
-                            "id": tc_delta.id or "",
-                            "name": "",
-                            "arguments": "",
-                        }
-                    entry = collected_tool_calls[idx]
-                    if tc_delta.id:
-                        entry["id"] = tc_delta.id
-                    if tc_delta.function:
-                        if tc_delta.function.name:
-                            entry["name"] = tc_delta.function.name
-                        if tc_delta.function.arguments:
-                            entry["arguments"] += tc_delta.function.arguments
+                # Accumulate tool calls from delta form
+                if getattr(delta, "tool_calls", None):
+                    for tc_delta in delta.tool_calls:
+                        idx = tc_delta.index
+                        if idx not in collected_tool_calls:
+                            collected_tool_calls[idx] = {
+                                "id": tc_delta.id or "",
+                                "name": "",
+                                "arguments": "",
+                            }
+                        entry = collected_tool_calls[idx]
+                        if tc_delta.id:
+                            entry["id"] = tc_delta.id
+                        if tc_delta.function:
+                            if tc_delta.function.name:
+                                entry["name"] = tc_delta.function.name
+                            if tc_delta.function.arguments:
+                                entry["arguments"] += tc_delta.function.arguments
+            else:
+                # Non-streaming final message shape (e.g. Ollama returns a full
+                # message object rather than deltas). Read content and tool_calls
+                msg = getattr(choice, "message", None)
+                if msg is not None:
+                    content_text = getattr(msg, "content", None)
+                    if content_text:
+                        collected_content += content_text
+                        yield ApiTextDeltaEvent(text=content_text)
+                    # Some servers embed tool calls in message.tool_calls
+                    if getattr(msg, "tool_calls", None):
+                        for tc in msg.tool_calls:
+                            # tc may have function.name and function.arguments or
+                            # name/arguments directly; normalize to string
+                            func = getattr(tc, "function", None)
+                            name = None
+                            args = None
+                            if func is not None:
+                                name = getattr(func, "name", None)
+                                args = getattr(func, "arguments", None)
+                            else:
+                                name = getattr(tc, "name", None)
+                                args = getattr(tc, "arguments", None)
+                            if isinstance(args, str):
+                                try:
+                                    args = json.loads(args)
+                                except Exception:
+                                    args = {}
+                            if name:
+                                idx = getattr(tc, "index", 0)
+                                if idx not in collected_tool_calls:
+                                    collected_tool_calls[idx] = {"id": getattr(tc, "id", ""), "name": "", "arguments": ""}
+                                collected_tool_calls[idx]["name"] = name
+                                if isinstance(args, dict):
+                                    collected_tool_calls[idx]["arguments"] += json.dumps(args)
 
             # Usage in chunk (if provider sends it)
             if chunk.usage:

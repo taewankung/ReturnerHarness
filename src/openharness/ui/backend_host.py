@@ -68,6 +68,7 @@ class BackendHostConfig:
     extra_plugin_roots: tuple[str, ...] = ()
     memory_backend: MemoryCommandBackend | None = None
     include_project_memory: bool = True
+    autodream_context: dict[str, object] | None = None
 
 
 class ReactBackendHost:
@@ -113,6 +114,7 @@ class ReactBackendHost:
             extra_plugin_roots=self._config.extra_plugin_roots,
             memory_backend=self._config.memory_backend,
             include_project_memory=self._config.include_project_memory,
+            autodream_context=self._config.autodream_context,
         )
         await start_runtime(self._bundle)
         await self._emit(
@@ -667,7 +669,12 @@ class ReactBackendHost:
             return
 
         if command == "model":
-            options = self._model_select_options(current_model, active_profile.provider, active_profile.allowed_models)
+            options = self._model_select_options(
+                current_model,
+                active_profile.provider,
+                active_profile.allowed_models,
+                active_profile.base_url if getattr(active_profile, "base_url", None) is not None else None,
+            )
             await self._emit(
                 BackendEvent(
                     type="select_request",
@@ -679,7 +686,7 @@ class ReactBackendHost:
 
         await self._emit(BackendEvent(type="error", message=f"No selector available for /{command}"))
 
-    def _model_select_options(self, current_model: str, provider: str, allowed_models: list[str] | None = None) -> list[dict[str, object]]:
+    def _model_select_options(self, current_model: str, provider: str, allowed_models: list[str] | None = None, base_url: str | None = None) -> list[dict[str, object]]:
         if allowed_models:
             return [
                 {
@@ -690,6 +697,44 @@ class ReactBackendHost:
                 }
                 for value in allowed_models
             ]
+        # If this looks like a local Ollama profile, try to fetch available models
+        try:
+            if base_url:
+                b = base_url.strip()
+                if b.endswith("/v1"):
+                    b = b[: -3]
+                if "localhost" in b or b.startswith("http://127.0.0.1"):
+                    import httpx
+
+                    url = b.rstrip("/") + "/v1/models"
+                    try:
+                        with httpx.Client(timeout=2.0) as client:
+                            resp = client.get(url)
+                            resp.raise_for_status()
+                            data = resp.json()
+                    except Exception:
+                        data = None
+                    models = None
+                    if isinstance(data, dict):
+                        models = data.get("data") or data.get("models")
+                    if models is None:
+                        models = data if isinstance(data, list) else None
+                    if models:
+                        opts: list[dict[str, object]] = []
+                        for m in models:
+                            if isinstance(m, dict):
+                                name = m.get("id") or m.get("name") or m.get("model") or str(m)
+                            else:
+                                name = str(m)
+                            opts.append({
+                                "value": name,
+                                "label": name,
+                                "description": "discovered from Ollama",
+                                "active": name == current_model,
+                            })
+                        return opts
+        except Exception:
+            pass
         provider_name = provider.lower()
         if provider_name in {"anthropic", "anthropic_claude"}:
             resolved_current = resolve_model_setting(current_model, provider_name)
@@ -901,6 +946,7 @@ async def run_backend_host(
     extra_plugin_roots: tuple[str | Path, ...] = (),
     memory_backend: MemoryCommandBackend | None = None,
     include_project_memory: bool = True,
+    autodream_context: dict[str, object] | None = None,
 ) -> int:
     """Run the structured React backend host."""
     if cwd:
@@ -926,6 +972,7 @@ async def run_backend_host(
             extra_plugin_roots=tuple(str(Path(path).expanduser().resolve()) for path in extra_plugin_roots),
             memory_backend=memory_backend,
             include_project_memory=include_project_memory,
+            autodream_context=autodream_context,
         )
     )
     return await host.run()

@@ -113,7 +113,18 @@ export function useBackendSession(config: FrontendConfig, onExit: (code?: number
 	};
 
 	useEffect(() => {
-		const [command, ...args] = config.backend_command;
+		const backendCmd = config.backend_command;
+		if (!Array.isArray(backendCmd) || backendCmd.length === 0) {
+			// Provide a clear runtime message instead of crashing when the config
+			// does not include a backend command. This prevents the "undefined
+			// is not iterable" runtime error and surfaces a helpful message to
+			// the user of the TUI.
+			queueTranscriptItem({role: 'system', text: 'Invalid frontend config: missing or empty `backend_command`. Set OPENHARNESS_FRONTEND_CONFIG to include a backend_command array.'});
+			// Call onExit to allow the host to clean up; do not attempt to spawn.
+			onExit(1);
+			return;
+		}
+		const [command, ...args] = backendCmd;
 		const useDetachedGroup = process.platform !== 'win32';
 		const child = spawn(command, args, {
 			stdio: ['pipe', 'pipe', 'inherit'],

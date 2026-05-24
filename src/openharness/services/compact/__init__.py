@@ -15,7 +15,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Literal
+from typing import Any, Awaitable, Callable, Literal, Optional
 from uuid import uuid4
 
 from openharness.engine.messages import (
@@ -113,19 +113,24 @@ class CompactionResult:
 # Token estimation
 # ---------------------------------------------------------------------------
 
-def estimate_message_tokens(messages: list[ConversationMessage]) -> int:
-    """Estimate total tokens for a conversation, including the 4/3 padding."""
+def estimate_message_tokens(messages: list[ConversationMessage], model: Optional[str] = None) -> int:
+    """Estimate total tokens for a conversation, including the 4/3 padding.
+
+    If `model` is provided, it will be forwarded to the underlying tokenizer
+    (when available) so local OpenAI-compatible backends like Ollama can be
+    measured more accurately.
+    """
     total = 0
     image_token_estimate = _vision_token_budget_per_image()
     for msg in messages:
         for block in msg.content:
             if isinstance(block, TextBlock):
-                total += estimate_tokens(block.text)
+                total += estimate_tokens(block.text, model=model)
             elif isinstance(block, ToolResultBlock):
-                total += estimate_tokens(block.content)
+                total += estimate_tokens(block.content, model=model)
             elif isinstance(block, ToolUseBlock):
-                total += estimate_tokens(block.name)
-                total += estimate_tokens(str(block.input))
+                total += estimate_tokens(block.name, model=model)
+                total += estimate_tokens(str(block.input), model=model)
             elif isinstance(block, ImageBlock):
                 total += image_token_estimate
     return int(total * TOKEN_ESTIMATION_PADDING)

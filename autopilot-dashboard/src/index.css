@@ -5,14 +5,14 @@
   --bg-elevated: #1a1a1a;
   --ink: #ffffff;
   --ink-secondary: #888888;
-  --accent: #00d4aa;
-  --accent-light: #00f0c0;
+  --accent: #00c853;
+  --accent-light: #00e676;
   --accent-orange: #ff6b35;
   --accent-violet: #8b5cf6;
   --muted: #666666;
   --line: #222222;
   --line-bright: #333333;
-  --success: #00d4aa;
+  --success: #00c853;
   --error: #ff4444;
   --warning: #ffaa00;
   --mono: "JetBrains Mono", "Fira Code", ui-monospace, "Cascadia Code", monospace;

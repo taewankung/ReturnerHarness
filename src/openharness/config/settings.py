@@ -209,6 +209,14 @@ def default_provider_profiles() -> dict[str, ProviderProfile]:
             auth_source="openai_api_key",
             default_model="gpt-5.4",
         ),
+        "ollama": ProviderProfile(
+            label="Ollama (local)",
+            provider="openai",
+            api_format="openai",
+            auth_source="openai_api_key",
+            default_model="llama3.1:latest",
+            base_url="http://localhost:11434",
+        ),
         "codex": ProviderProfile(
             label="Codex Subscription",
             provider="openai_codex",

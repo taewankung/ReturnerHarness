@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { HeroBackground } from "./components/HeroBackground";
 import { PipelineAnimation } from "./components/PipelineAnimation";
+import { ThemeManager } from "./components/ThemeManager";
 import type { Snapshot, TaskCard, JournalEntry } from "./types";
 import { STATUS_LABELS, STATUS_COLORS, KANBAN_GROUPS } from "./types";
 
@@ -141,6 +142,7 @@ export function App() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [filter, setFilter] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [theme, setTheme] = useState("green-dark");
 
   useEffect(() => {
     fetch("./snapshot.json", { cache: "no-store" })
@@ -195,6 +197,7 @@ export function App() {
 
   return (
     <>
+      <ThemeManager theme={theme} />
       {/* ── Hero ─────────────────────────── */}
       <section className="hero">
         <div className="hero-bg">

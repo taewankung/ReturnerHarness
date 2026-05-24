@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Awaitable, Callable, Literal, get_args, Iterable
 
 import pyperclip
+import httpx
 
 from openharness.autopilot import RepoAutopilotStore
 from openharness.auth.manager import AuthManager
@@ -539,20 +540,53 @@ def create_default_command_registry(
 
     async def _cost_handler(_: str, context: CommandContext) -> CommandResult:
         usage = context.engine.total_usage
-        model = context.app_state.get().model if context.app_state is not None else load_settings().model
+        settings = load_settings()
+        model = context.app_state.get().model if context.app_state is not None else settings.model
+        
+        # Detect provider for more accurate cost calculation
+        provider_info = detect_provider(settings)
+        
         estimated_cost = "unavailable"
-        if model.startswith("claude-3-5-sonnet"):
-            estimated = (usage.input_tokens * 3.0 + usage.output_tokens * 15.0) / 1_000_000
+        
+        # Handle different providers based on detected provider info
+        if provider_info.name == "anthropic" or model.startswith("claude-"):
+            # Anthropic Claude pricing (in dollars per million tokens)
+            if model.startswith("claude-3-5-sonnet"):
+                estimated = (usage.input_tokens * 3.0 + usage.output_tokens * 15.0) / 1_000_000
+                estimated_cost = f"${estimated:.4f} (estimated)"
+            elif model.startswith("claude-3-7-sonnet"):
+                estimated = (usage.input_tokens * 3.0 + usage.output_tokens * 15.0) / 1_000_000
+                estimated_cost = f"${estimated:.4f} (estimated)"
+            elif model.startswith("claude-3-opus"):
+                estimated = (usage.input_tokens * 15.0 + usage.output_tokens * 75.0) / 1_000_000
+                estimated_cost = f"${estimated:.4f} (estimated)"
+            else:
+                # Default pricing for other Claude models
+                estimated = (usage.input_tokens * 3.0 + usage.output_tokens * 15.0) / 1_000_000
+                estimated_cost = f"${estimated:.4f} (estimated)"
+        elif provider_info.name == "ollama" or "ollama" in (settings.base_url or "").lower() or model.startswith("ollama"):
+            # Ollama models (local, no cost)
+            # Ollama doesn't charge per token since it runs locally
+            estimated_cost = "free (Ollama local model - no token charges)"
+        elif model.startswith("gpt-4"):
+            # GPT-4 pricing (example values in dollars per million tokens)
+            estimated = (usage.input_tokens * 10.0 + usage.output_tokens * 30.0) / 1_000_000
             estimated_cost = f"${estimated:.4f} (estimated)"
-        elif model.startswith("claude-3-7-sonnet"):
-            estimated = (usage.input_tokens * 3.0 + usage.output_tokens * 15.0) / 1_000_000
+        elif model.startswith("gpt-3.5"):
+            # GPT-3.5 pricing (example values in dollars per million tokens)
+            estimated = (usage.input_tokens * 0.5 + usage.output_tokens * 1.5) / 1_000_000
             estimated_cost = f"${estimated:.4f} (estimated)"
-        elif model.startswith("claude-3-opus"):
-            estimated = (usage.input_tokens * 15.0 + usage.output_tokens * 75.0) / 1_000_000
-            estimated_cost = f"${estimated:.4f} (estimated)"
+        elif provider_info.name == "openai-compatible":
+            # Other OpenAI-compatible providers
+            estimated_cost = "unknown (OpenAI-compatible provider - pricing varies)"
+        else:
+            # Default case
+            estimated_cost = "unavailable"
+            
         return CommandResult(
             message=(
                 f"Model: {model}\n"
+                f"Provider: {provider_info.name}\n"
                 f"Input tokens: {usage.input_tokens}\n"
                 f"Output tokens: {usage.output_tokens}\n"
                 f"Total tokens: {usage.total_tokens}\n"
@@ -1567,6 +1601,38 @@ def create_default_command_registry(
                         + "\n".join(f"- {model}" for model in profile.allowed_models)
                     )
                 )
+            # If this is a local Ollama profile (or points at localhost), attempt to fetch models
+            base_url = (profile.base_url or "").strip()
+            is_local_ollama = active_profile == "ollama" or (base_url and "localhost" in base_url)
+            if is_local_ollama:
+                url = (base_url or "http://localhost:11434").rstrip("/") + "/v1/models"
+                headers = {}
+                api_key = settings.api_key or os.environ.get("OPENAI_API_KEY", "")
+                if api_key:
+                    headers["Authorization"] = f"Bearer {api_key}"
+                try:
+                    async with httpx.AsyncClient(timeout=10.0) as client:
+                        resp = await client.get(url, headers=headers)
+                        resp.raise_for_status()
+                        data = resp.json()
+                except Exception as exc:
+                    return CommandResult(message=f"Failed to list models from {active_profile}: {exc}")
+
+                models = None
+                if isinstance(data, dict):
+                    models = data.get("data") or data.get("models")
+                if models is None:
+                    models = data if isinstance(data, list) else None
+                if models:
+                    lines = [f"Models from {active_profile} ({url}):"]
+                    for m in models:
+                        if isinstance(m, dict):
+                            name = m.get("id") or m.get("name") or m.get("model") or str(m)
+                        else:
+                            name = str(m)
+                        lines.append(f"- {name}")
+                    return CommandResult(message="\n".join(lines))
+
             return CommandResult(
                 message=(
                     f"Profile '{active_profile}' has no pinned model list. "

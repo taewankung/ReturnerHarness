@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import time
@@ -655,6 +656,7 @@ async def run_query(
         context.context_window_tokens,
     )
     reported_token_clamp = False
+    near_capacity_reported = False
 
     async def _stream_compaction(
         *,
@@ -708,6 +710,26 @@ async def run_query(
                     f"using {effective_max_tokens}."
                 )
             ), None
+        # Proactive near-capacity warning before compaction runs
+        try:
+            token_estimate = estimate_message_tokens(messages)
+        except Exception:
+            token_estimate = None
+        threshold = context.auto_compact_threshold_tokens
+        if (
+            threshold is not None
+            and token_estimate is not None
+            and not near_capacity_reported
+        ):
+            warn_level = max(0, int(threshold - (AUTOCOMPACT_BUFFER_TOKENS // 2)))
+            if token_estimate >= warn_level and token_estimate < threshold:
+                near_capacity_reported = True
+                yield StatusEvent(
+                    message=(
+                        f"Context approaching capacity (~{token_estimate}/{threshold} tokens). "
+                        "Auto-compaction will run if needed."
+                    )
+                ), None
         # --- auto-compact check before calling the model ---------------
         async for event, usage in _stream_compaction(trigger="auto"):
             yield event, usage
@@ -912,16 +934,127 @@ async def _execute_tool_call(
             content=f"Unknown tool: {tool_name}",
             is_error=True,
         )
+    # Normalize common wrapper shapes returned by some OpenAI-compatible
+    # providers (e.g. Ollama). Models sometimes return a function-call
+    # argument object that wraps the actual parameters, for example:
+    #   {"function": "brief", "params": {"text": "..."}}
+    # or
+    #   {"arguments": "{\"text\": \"...\"}"}
+    # Unwrap these into the plain parameter dict before validation.
+    # Recursively unwrap common wrapper shapes returned by some providers.
+    # Examples:
+    #   {"function": "brief", "params": {"text": "..."}}
+    #   {"function": {"name": "brief", "arguments": "{...}"}}
+    #   {"arguments": "{\"text\": \"...\"}"}
+    if isinstance(tool_input, dict):
+        raw = tool_input
+        unwrapped = True
+        # Keep unwrapping until no further nesting is found
+        while unwrapped:
+            unwrapped = False
+            try:
+                # Ollama-style wrapper: {"function": "name", "params": {...}}
+                if "params" in raw and isinstance(raw["params"], dict) and ("function" in raw or "name" in raw):
+                    log.debug("Unwrapping tool_input.params for tool=%s", tool_name)
+                    raw = raw["params"]
+                    unwrapped = True
+                    continue
+
+                # Stringified params: {"params": "{...}"}
+                if "params" in raw and isinstance(raw["params"], str):
+                    try:
+                        parsed = json.loads(raw["params"])
+                        if isinstance(parsed, dict):
+                            log.debug("Parsed stringified params for tool=%s", tool_name)
+                            raw = parsed
+                            unwrapped = True
+                            continue
+                    except Exception:
+                        pass
+
+                # Nested function object: {"function": {"name": "..", "arguments": {...}}}
+                if "function" in raw and isinstance(raw["function"], dict) and "arguments" in raw["function"]:
+                    args = raw["function"]["arguments"]
+                    if isinstance(args, str):
+                        try:
+                            args = json.loads(args)
+                        except Exception:
+                            pass
+                    if isinstance(args, dict):
+                        log.debug("Unwrapping function.arguments for tool=%s", tool_name)
+                        raw = args
+                        unwrapped = True
+                        continue
+
+                # Generic stringified arguments: {"arguments": "{...}"}
+                if "arguments" in raw and isinstance(raw["arguments"], str):
+                    try:
+                        parsed = json.loads(raw["arguments"])
+                        if isinstance(parsed, dict):
+                            log.debug("Parsed stringified arguments for tool=%s", tool_name)
+                            raw = parsed
+                            unwrapped = True
+                            continue
+                    except Exception:
+                        pass
+
+                # If wrapper had 'function' as top-level and 'params' not present,
+                # but other keys wrap the real payload under a single key, try a
+                # conservative single-key unwrap (e.g. {'function': ..., 'payload': {...}})
+                if (
+                    isinstance(raw, dict)
+                    and len(raw) == 2
+                    and ("function" in raw or "name" in raw)
+                ):
+                    # find the non-function key
+                    for k, v in raw.items():
+                        if k not in {"function", "name"} and isinstance(v, dict):
+                            log.debug("Conservative unwrap of single non-function key '%s' for tool=%s", k, tool_name)
+                            raw = v
+                            unwrapped = True
+                            break
+            except Exception:
+                break
+
+        # final normalized candidate
+        tool_input = raw
 
     try:
+        log.debug("Validating tool input for %s: %r", tool_name, tool_input)
         parsed_input = tool.input_model.model_validate(tool_input)
     except Exception as exc:
-        log.warning("invalid input for %s: %s", tool_name, exc)
-        return ToolResultBlock(
-            tool_use_id=tool_use_id,
-            content=f"Invalid input for {tool_name}: {exc}",
-            is_error=True,
-        )
+        log.debug("Initial validation failed for %s: %s — attempting alias remap", tool_name, exc)
+        # Heuristic remapping for common alias keys (e.g. `q` -> `query`)
+        alias_map = {
+            "q": "query",
+            "prompt": "query",
+            "question": "query",
+            "query_text": "query",
+            "content": "query",
+        }
+        remapped = None
+        if isinstance(tool_input, dict):
+            for src, dst in alias_map.items():
+                if src in tool_input and dst not in tool_input:
+                    candidate = dict(tool_input)
+                    candidate[dst] = candidate.pop(src)
+                    try:
+                        parsed_input = tool.input_model.model_validate(candidate)
+                        remapped = candidate
+                        log.debug("Validation succeeded for %s after remapping %s->%s", tool_name, src, dst)
+                        break
+                    except Exception:
+                        continue
+            if remapped is None:
+                log.warning("invalid input for %s: %s", tool_name, exc)
+                return ToolResultBlock(
+                    tool_use_id=tool_use_id,
+                    content=f"Invalid input for {tool_name}: {exc}",
+                    is_error=True,
+                )
+            # Adopt the remapped input on success
+            tool_input = remapped
+            log.debug("Tool input remapped for %s -> %r", tool_name, tool_input)
 
     # Normalize common tool inputs before permission checks so path rules apply
     # consistently across built-in tools that use `file_path`, `path`, or
